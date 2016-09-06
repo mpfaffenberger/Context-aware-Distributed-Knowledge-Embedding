@@ -14,8 +14,6 @@ cmd:text()
 cmd:text('Knowledge Graph Embedding Learning')
 cmd:text()
 cmd:text('Options')
-cmd:option('-numEnt',14951,'number of entities in the knowledge graph')
-cmd:option('-numRel',1345,'number of relations in the knowledge graph')
 cmd:option('-entSize',256,'size of the entity embedding')
 cmd:option('-relSize',256,'size of the relation embedding')
 cmd:option('-batchSize',4096,'number of triples in a mini-batch')
@@ -35,30 +33,29 @@ if opt.useGPU > 0 then
 	torch.setdefaulttensortype('torch.CudaTensor')
 end
 
-function TransE(entSize, relSize)
+function TransE()
 	local sub = nn.Identity()()
 	local rel = nn.Identity()()
 	local obj = nn.Identity()()
-
-	local distance = nn.PairwiseDistance(2) ({nn.CAddTable()({sub, rel}), obj})    
-
+	local distance = nn.PairwiseDistance(2) ({nn.CAddTable()({sub, rel}), obj})
 	return nn.gModule({sub, rel, obj}, {distance})
 end
 
 -- logger
 -- local logger = logroll.print_logger()
-local logger = logroll.file_logger(opt.logFile)
+local logger = logroll.file_logger("logs.txt")
+loader = TripleDataLoader("wn.t7", 4096, 4, logger)
 
 -- Master Model
-local EntityEmbed   = cudacheck(nn.LookupTable(opt.numEnt, opt.entSize))
-local entParams, entGrads = EntityEmbed:getParameters()
-entParams:uniform(-opt.initRange,opt.initRange)
-local RelationEmbed = cudacheck(nn.LookupTable(opt.numRel, opt.relSize))
-local relParams, relGrads = RelationEmbed:getParameters()
-relParams:uniform(-opt.initRange,opt.initRange)
+EntityEmbed   = cudacheck(nn.LookupTable(loader.numEntities, 256))
+entParams, entGrads = EntityEmbed:getParameters()
+e = entParams:uniform(-0.1,0.1)
+RelationEmbed = cudacheck(nn.LookupTable(loader.numPredicates, 256))
+relParams, relGrads = RelationEmbed:getParameters()
+e =relParams:uniform(-0.1,0.1)
 
 -- TransEModel
-local TransEModel = cudacheck(TransE(opt.entSize, opt.relSize))
+local TransEModel = cudacheck(TransE(loader.numEntities, loader.numPredicates))
 local transEParams, transEGrads = TransEModel:getParameters()
 
 local model = {}
@@ -72,12 +69,11 @@ local RelEmbed, NegRelEmbed = unpack(cloneManyTimes(RelationEmbed, 2))
 local PositiveModel, NegObjModel, NegSubModel, NegRelModel = unpack(cloneManyTimes(TransEModel, 4))
 
 -- Citerion
-local objCriterion = cudacheck(nn.MarginRankingCriterion(opt.costMargin))
-local subCriterion = cudacheck(nn.MarginRankingCriterion(opt.costMargin))
-local relCriterion = cudacheck(nn.MarginRankingCriterion(opt.costMargin))
+local objCriterion = cudacheck(nn.MarginRankingCriterion(1))
+local subCriterion = cudacheck(nn.MarginRankingCriterion(1))
+local relCriterion = cudacheck(nn.MarginRankingCriterion(1))
 
 -- Data Loader
-local loader = TripleDataLoader(opt.dataFile, opt.batchSize, opt.negSize, logger)
 
 -- Optimizer
 local optimParams, optimGrads = {entParams, relParams}, {entGrads, relGrads}
@@ -85,7 +81,7 @@ local optimParams, optimGrads = {entParams, relParams}, {entGrads, relGrads}
 local aoptimConf = {lr = {0.05, 0.05}, logger = logger}
 local aoptimizer = AdaGrad(optimGrads, aoptimConf)
 
-local maxIter = math.floor(loader.numData / opt.batchSize) * opt.maxEpochs
+local maxIter = math.floor(loader.numData / 4096) * 10
 local epochLoss, cummLoss = 0, 0
 for i = 1, maxIter do
 	xlua.progress(i, maxIter)
@@ -109,9 +105,11 @@ for i = 1, maxIter do
 	local negRelScore = NegRelModel:forward({sub, negRel, obj})
 
 	-- criterion
-	local lossObj = objCriterion:forward({posScore, negObjScore}, -1):sum()
-	local lossSub = subCriterion:forward({posScore, negSubScore}, -1):sum()
-	local lossRel = relCriterion:forward({posScore, negRelScore}, -1):sum()
+	print(posScore)
+	print(negObjScore)
+	local lossObj = objCriterion:forward({posScore, negObjScore}, -1)
+	local lossSub = subCriterion:forward({posScore, negSubScore}, -1)
+	local lossRel = relCriterion:forward({posScore, negRelScore}, -1)
 
 	epochLoss = epochLoss + lossObj + lossSub + lossRel
 	cummLoss  = cummLoss  + lossObj + lossSub + lossRel

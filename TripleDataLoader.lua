@@ -6,6 +6,8 @@ function TripleDataLoader:__init(datafile, batchSize, negSize, logger)
     self.subs = data.subs
     self.rels = data.rels
     self.objs = data.objs
+    self.numPredicates = data.numPredicates
+    self.numEntities = data.numEntities
 
     -- additional variables
     self.batchSize = batchSize
@@ -65,13 +67,37 @@ end
 
 -- create torch-format data for TripleDataLoader
 function createTripleData(dataPath, savePath)
+
+    local counter = 1
+    local tokens = {}
+
     -- class variables
     local subs = {}
     local objs = {}
     local rels = {}
     local dict = {}
+    local preds = {}
 
     -- read data fileh
+    local file = io.open(dataPath, 'r')
+    local line
+
+    function maybeAdd(str)
+        if tokens[str] == nil then
+            tokens[str] = counter
+            counter = counter + 1;
+        end
+    end
+
+    while true do
+        line = file:read()
+        if line == nil then break end
+        local triples = stringx.split(line)
+        maybeAdd(triples[1])
+        maybeAdd(triples[2])
+        maybeAdd(triples[3])
+    end
+
     local file = io.open(dataPath, 'r')
     local line
     
@@ -81,9 +107,10 @@ function createTripleData(dataPath, savePath)
         if line == nil then break end
         local fields = stringx.split(line)
 
-        subs[#subs+1] = tonumber(fields[1]) + 1
-        rels[#rels+1] = tonumber(fields[2]) + 1
-        objs[#objs+1] = tonumber(fields[3]) + 1
+        preds[tokens[fields[2]]] = "_"
+        subs[#subs+1] = tokens[fields[1]]
+        rels[#rels+1] = tokens[fields[2]]
+        objs[#objs+1] = tokens[fields[3]]
         dict[table.concat({subs[#subs], rels[#rels], objs[#objs]}, '_')] = true
         
     end
@@ -94,6 +121,9 @@ function createTripleData(dataPath, savePath)
     data.rels = torch.LongTensor(rels)
     data.objs = torch.LongTensor(objs)
     data.dict = dict
-
+    data.numEntities = counter - 1
+    data.numPredicates = #rels
+    print(#preds)
+    print(counter - 1)
     torch.save(savePath, data)
 end
